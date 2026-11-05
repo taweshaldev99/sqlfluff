@@ -13,6 +13,8 @@ import sys
 import weakref
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -86,3 +88,32 @@ def test__parity__codegen_lexer_patterns_hash_seed_stable():
         )
         outputs.add(proc.stdout)
     assert len(outputs) == 1, "lexer matcher patterns vary with the hash seed"
+
+
+@pytest.mark.parametrize("optional", [False, True])
+@pytest.mark.parametrize("reset_terminators", [False, True])
+def test__parity__codegen_anything_flags(optional, reset_terminators):
+    """Anything preserves optionality and terminators in generated tables."""
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from sqlfluff.core.dialects import dialect_selector
+    from sqlfluff.core.parser import Anything, Ref
+    from utils.build_parsers import DummyParseContext, TableBuilder
+
+    ctx = DummyParseContext(dialect=dialect_selector("ansi"), uuid=0)
+    builder = TableBuilder()
+    terminator = Ref("SemicolonSegment")
+    grammar = Anything(
+        optional=optional,
+        reset_terminators=reset_terminators,
+        terminators=[terminator],
+    )
+    inst = builder.instructions[builder.flatten_grammar(grammar, ctx)]
+
+    assert inst.variant == "Anything"
+    assert bool(inst.flags & builder.FLAG_OPTIONAL) == optional
+    assert bool(inst.flags & builder.FLAG_RESET_TERMINATORS) == reset_terminators
+    assert inst.terminator_count == 1
+    assert builder.terminators[inst.first_terminator_idx] == builder.flatten_grammar(
+        terminator, ctx
+    )
