@@ -104,7 +104,14 @@ class Rule_RF01(BaseRule):
         query: RF01Query = RF01Query.from_segment(context.segment, context.dialect)
         query.parent_stack = context.parent_stack
         self._analyze_table_references(
-            query, dml_target_table, context.dialect, violations
+            query,
+            dml_target_table,
+            context.dialect,
+            violations,
+            is_dbt_bigquery=(
+                context.dialect.name == "bigquery"
+                and context.config.get("templater") == "dbt"
+            ),
         )
         return violations
 
@@ -137,6 +144,8 @@ class Rule_RF01(BaseRule):
         dml_target_table: Optional[list[tuple[str, ...]]],
         dialect: Dialect,
         violations: list[LintResult],
+        *,
+        is_dbt_bigquery: bool = False,
     ) -> None:
         # For each query...
         for selectable in query.selectables:
@@ -158,6 +167,13 @@ class Rule_RF01(BaseRule):
                 # Try and resolve each reference to a value in query.aliases (or
                 # in an ancestor query).
                 for r in select_info.reference_buffer:
+                    # dbt supplies this scripting variable for BigQuery
+                    # incremental models. Only the standalone name is implicit.
+                    if is_dbt_bigquery and [
+                        part.part.upper()
+                        for part in iter_raw_references(r, dialect.name)
+                    ] == ["_DBT_MAX_PARTITION"]:
+                        continue
                     if not self._should_ignore_reference(r, selectable):
                         # This function walks up the query's parent stack if necessary.
                         violation = self._resolve_reference(
@@ -169,7 +185,11 @@ class Rule_RF01(BaseRule):
         # Visit children.
         for child in query.children:
             self._analyze_table_references(
-                cast(RF01Query, child), dml_target_table, dialect, violations
+                cast(RF01Query, child),
+                dml_target_table,
+                dialect,
+                violations,
+                is_dbt_bigquery=is_dbt_bigquery,
             )
 
     def _should_ignore_reference(
