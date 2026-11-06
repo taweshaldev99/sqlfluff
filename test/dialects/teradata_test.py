@@ -162,6 +162,71 @@ def test_layout_rules_still_apply_to_sql_in_a_bteq_script() -> None:
     assert {v.line_no for v in linted.violations} == {2}
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ".IF ERRORCODE <> 0 THEN .QUIT 1",
+        ".RUN FILE=/home/user/long/path/POSTING",
+        ".REMARK values 1,2,3,4,5,6,7,8,9,10",
+        ".OS echo this is a long message --flag",
+    ],
+)
+@pytest.mark.parametrize("trailing_comments", ["before", "after"])
+def test_long_bteq_commands_are_not_rebroken(
+    command: str, trailing_comments: str
+) -> None:
+    """LT05 leaves long command lines intact while still fixing ordinary SQL."""
+    linter = Linter(
+        config=FluffConfig(
+            overrides={
+                "dialect": "teradata",
+                "rules": "LT05",
+                "max_line_length": 20,
+            }
+        )
+    )
+    linter.config.set_value(["indentation", "trailing_comments"], trailing_comments)
+    sql = "SELECT alpha, beta, gamma FROM my_table;\n"
+    raw = command + "\n" + sql
+    assert not linter.parse_string(raw).violations
+
+    linted = linter.lint_string(raw)
+    command_violations = [v for v in linted.violations if v.line_no == 1]
+    assert [v.rule_code() for v in command_violations] == ["LT05"]
+    assert command_violations[0].desc() == (f"Line is too long ({len(command)} > 20).")
+    # Inspect the proposed fixes: the parser's safety check can reject an
+    # invalid rewrite, masking the bug in a test of the fixed string alone.
+    assert not command_violations[0].fixes
+    assert any(v.line_no == 2 and v.fixes for v in linted.violations)
+
+    fixed, changed = linter.lint_string(raw, fix=True).fix_string()
+    assert changed
+    assert fixed.startswith(command + "\n")
+    assert fixed != raw
+    assert not linter.parse_string(fixed).violations
+    assert not [v for v in linter.lint_string(fixed).violations if v.line_no > 1]
+
+
+def test_lt05_fixes_sql_after_a_bteq_command_on_the_same_line() -> None:
+    """Protecting a command does not prevent wrapping SQL after its delimiter."""
+    linter = Linter(
+        config=FluffConfig(
+            overrides={
+                "dialect": "teradata",
+                "rules": "LT05",
+                "max_line_length": 20,
+            }
+        )
+    )
+    raw = ".LOGOFF; SELECT alpha, beta, gamma FROM my_table;\n"
+    assert not linter.parse_string(raw).violations
+    fixed, changed = linter.lint_string(raw, fix=True).fix_string()
+    assert changed
+    assert fixed.startswith(".LOGOFF;")
+    assert not linter.parse_string(fixed).violations
+    assert not linter.lint_string(fixed).violations
+
+
 def test_modelled_and_generic_command_words_have_distinct_types(
     teradata_linter: Linter,
 ) -> None:

@@ -38,6 +38,32 @@ class Rule_LT05(BaseRule):
             .get_results()
         )
 
+        # BTEQ commands must stay on one physical line. Keep reporting their
+        # length, but never split their arguments or move shell options such
+        # as `--flag`, which the SQL lexer treats as a trailing comment.
+        bteq_raw_ids = {
+            raw.uuid
+            for command in context.segment.recursive_crawl("bteq_statement")
+            for raw in command.raw_segments
+        }
+        if bteq_raw_ids:
+            # Trailing whitespace and SQL-style comments sit outside the
+            # command's parse node, but may still be shell arguments. Protect
+            # them up to the newline or the next code token (e.g. a delimiter).
+            follows_bteq = False
+            for raw in context.segment.raw_segments:
+                if raw.uuid in bteq_raw_ids:
+                    follows_bteq = True
+                elif raw.is_type("newline", "end_of_file") or raw.is_code:
+                    follows_bteq = False
+                elif follows_bteq:
+                    bteq_raw_ids.add(raw.uuid)
+            for res in results:
+                if any(fix.anchor.uuid in bteq_raw_ids for fix in res.fixes):
+                    # The fixes in a result form a group (e.g. delete a comment
+                    # and reinsert it elsewhere), so discard the whole group.
+                    res.fixes = []
+
         # Ignore any comment line if appropriate.
         if self.ignore_comment_lines:
             raw_segments = context.segment.raw_segments
